@@ -1,0 +1,331 @@
+from torch.utils.data import TensorDataset, DataLoader
+from torch.optim import Adam
+from torch.nn import functional as F
+from torch import nn
+from numpy.random import seed
+from datetime import datetime
+import yfinance as yf
+import pandas_datareader.data as pdr
+import numpy as np
+import tensorflow as tf
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import mean_squared_error
+import sqlite3
+import pandas as pd
+import math
+import matplotlib.pyplot as plt
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
+from torch.nn import TransformerEncoder, TransformerEncoderLayer
+from torch.optim.lr_scheduler import LambdaLR
+from sklearn.model_selection import train_test_split
+plt.style.use('seaborn')
+yf.pdr_override()
+
+# For reproducability
+seed(1)
+tf.random.set_seed(2)
+
+
+# Some functions to help out with
+def plot_predictions(test, predicted, symbol):
+    plt.plot(test, color='red', label=f'Real {symbol} Stock Price')
+    plt.plot(predicted, color='blue', label=f'Predicted {symbol} Stock Price')
+    plt.title(f'{symbol} Stock Price Prediction')
+    plt.xlabel('Time')
+    plt.ylabel(f'{symbol} Stock Price')
+    plt.legend()
+    plt.show()
+
+
+def plot_return_predictions(test, predicted, symbol):
+    plt.plot(test, color='red', label=f'Real {symbol} Stock Price Returns')
+    plt.plot(predicted, color='blue',
+             label=f'Predicted {symbol} Stock Price Return')
+    plt.title(f'{symbol} Stock Return Prediction')
+    plt.xlabel('Time')
+    plt.ylabel(f'{symbol} Stock Price Returns')
+    plt.legend()
+    plt.show()
+
+
+def return_rmse(test, predicted):
+    rmse = math.sqrt(mean_squared_error(test, predicted))
+    print("The root mean squared error is {}.".format(rmse))
+    return rmse
+
+
+def get_ticker_data(ticker: str, param_start_date, param_end_date) -> tuple:
+    # Fetch data from Yahoo Finance
+    data = pdr.get_data_yahoo(
+        ticker, start=param_start_date, end=param_end_date)
+    data.reset_index(inplace=True)
+    data = data.fillna(method="ffill", axis=0)
+    data = data.fillna(method="bfill", axis=0)
+
+    # Prepare the data
+    prices = data["Close"].values.reshape(-1, 1)
+
+    # Scale the data
+    scaler = MinMaxScaler(feature_range=(-1, 1))
+    prices = scaler.fit_transform(prices)
+
+    # Create sequences
+    SEQ_LEN = 8  # I assumed the sequence length, you can change this value as per your requirements
+    inputs, targets = [], []
+    for i in range(SEQ_LEN, len(prices) - 1):
+        inputs.append(prices[i - SEQ_LEN:i])
+        targets.append(prices[i + 1])
+
+    return data, np.array(inputs), np.array(targets)
+
+
+def fetch_ticker_data(ticker: str, start_date, end_date) -> tuple:
+    return get_ticker_data(ticker, start_date, end_date)
+
+
+def shift(xs, n):
+    e = np.empty_like(xs)
+    if n >= 0:
+        e[:n] = np.nan
+        e[n:] = xs[:-n]
+    else:
+        e[n:] = np.nan
+        e[:n] = xs[-n:]
+    return e
+
+# Scaled Exponentially-Regularized Linear Unit to try out - if anyone can make this work, let me know.
+
+# def serlu(x, lambdaa=1.07862, alphaa=2.90427):
+#     result = tf.cond(x >= 0, lambda: tf.math.multiply(lambdaa, x), lambda: tf.math.multiply(lambdaa, alphaa, x, tf.exp(x)))
+#     return result
+# Example usage:
+
+
+symbol_to_fetch = 'IBM'
+start_date = '2020-01-01'
+end_date = datetime.now().strftime('%Y-%m-%d')
+stock, inputs, targets = fetch_ticker_data(
+    symbol_to_fetch, start_date, end_date)
+stock.columns = ['DateTime', 'High', 'Low',
+                 'Open', 'Close', 'Volume', 'Adj Close']
+stock['DateTime'] = pd.to_datetime(stock['DateTime'])
+stock.set_index('DateTime', inplace=True)
+stock['Symbol'] = symbol_to_fetch
+
+# save a copy for later testing
+original_stock = stock
+original_symbol = symbol_to_fetch
+
+# print(stock_df.tail())
+# print(inputs[-5:], targets[-5:])
+# Choose a stock symbol
+symbol_to_fetch = 'IBM'
+# Choose a date range
+start_date = str(datetime(2017, 1, 1).date())
+end_date = str(datetime(2021, 2, 18).date())
+# end_date = datetime.now().strftime('%Y-%m-%d')
+
+# We have chosen the target as 'Close' attribute for prices. Let's see what it looks like
+target = 'Close'  # this is accessed by .iloc[:,3:4].values below
+train_start_date = start_date
+train_end_date = '2021-10-31'
+test_start_date = '2021-11-01'
+training_set = stock[train_start_date:train_end_date].iloc[:, 3:4].values
+test_set = stock[test_start_date:].iloc[:, 3:4].values
+
+test_set_return = stock[test_start_date:].iloc[:, 3:4].pct_change().values
+# log_return_test = np.log(test_set_return)
+
+print(training_set.shape)
+print(test_set.shape)
+
+# Scaling the training set - I've tried it without scaling and results are very poor.
+sc = MinMaxScaler(feature_range=(0, 1))
+training_set_scaled = sc.fit_transform(training_set)
+
+timesteps = 8
+# First, we create data sets where each sample has with 8 timesteps and 1 output
+# So for each element of training set, we have 8 previous training set elements
+x_train = []
+y_train = []
+for i in range(timesteps, training_set.shape[0]):
+    x_train.append(training_set_scaled[i-timesteps:i, 0])
+    y_train.append(training_set_scaled[i, 0])
+x_train, y_train = np.array(x_train), np.array(y_train)
+
+print(x_train[0], y_train[0])
+print(x_train[1], y_train[1])
+
+# Notice how the first y_train value becomes the last X_train value for the next sample
+print(x_train.shape, y_train.shape)
+# x_train = x_train.reshape((x_train.shape[0], x_train.shape[1], 1))
+x_train = x_train.reshape((x_train.shape[0], 1, x_train.shape[1]))
+print(x_train.shape, y_train.shape)
+
+print(x_train.shape, y_train.shape, type(x_train), type(y_train))
+# Interestingly - randomly arranging the samples works well, since we are using validation_split = 0.2, (rather then validation_data = )
+# It is worth looking into whether using a K-fold would work better - if so would not use random permutation.
+idx = np.random.permutation(len(x_train))
+x_train = x_train[idx]
+y_train = y_train[idx]
+x_train.shape, y_train.shape
+
+
+class TransformerEncoder(nn.Module):
+    def __init__(self, input_dim, head_size, num_heads, ff_dim, dropout=0):
+        super(TransformerEncoder, self).__init__()
+        print(
+            f'TransformerEncoder input dim: {input_dim}, head size: {head_size}, num heads: {num_heads}, ff dim: {ff_dim}, dropout: {dropout}')
+        # Normalize on (485, 1, 8)
+        self.ln1 = nn.LayerNorm(input_dim, eps=1e-6)
+        # Get from 8 to head_size * num_heads)
+        self.embedding = nn.Linear(
+            input_dim[2], head_size * num_heads)  # New embedding layer
+        # Get from (485, x, head_size * num_heads) to (485, x, head_size * num_heads)
+        self.attn = nn.MultiheadAttention(
+            embed_dim=head_size*num_heads, num_heads=num_heads, dropout=dropout)
+        # New dimension
+        new_dim = (input_dim[0], input_dim[1], head_size * num_heads)
+        self.dropout1 = nn.Dropout(dropout)
+        self.ln2 = nn.LayerNorm(new_dim, eps=1e-6)
+        # Equivalent to Conv1D with kernel size 1 in TF
+        # Get from head_size * num_heads to ff_dim
+        self.conv1 = nn.Linear(head_size * num_heads, ff_dim)
+        self.dropout2 = nn.Dropout(dropout)
+        # Equivalent to Conv1D with kernel size 1 in TF
+        self.conv2 = nn.Linear(ff_dim, input_dim[2])
+        # self.ln3 = nn.LayerNorm(new_dim, eps=1e-6)
+
+    def forward(self, inputs):
+        print(f"forward Input shape: {inputs.shape}")
+        # Apply the new embedding layer first
+        # x = self.embedding(inputs)
+        # print(f"forward x shape: {x.shape}")
+
+        # Input shape: (batch_size, seq_len, input_dim)
+        x = self.ln1(inputs)
+        print(f"Shape after ln1: {x.shape}")
+        embeddings = self.embedding(x)
+        print(f"Shape after embedding: {embeddings.shape}")
+        # x is reshaped to (seq_len, batch_size, input_dim) because PyTorch's MultiheadAttention requires this format
+        # x = x.permute(1, 0, 2)
+        print(f"Shape after permute: {x.shape}")
+        x, _ = self.attn(embeddings, embeddings, embeddings)
+        print(f"Shape after attn: {x.shape}")
+        # reshaping back to (batch_size, seq_len, input_dim)
+        # x = self.dropout1(x.permute(1, 0, 2))
+        x = self.dropout1(x)
+        print(f"Shape after dropout: {x.shape}")
+        # reduce back to input_dim[2]
+        # res = x + inputs
+        res = x + embeddings
+        print(f"Shape after res: {x.shape}")
+        layer_norm = self.ln2(res)
+        print(f"Shape after ln2: {layer_norm.shape}")
+        x = F.relu(self.conv1(layer_norm))
+        print(f"Shape after relu: {x.shape}")
+        x = self.dropout2(x)
+        print(f"Shape after dropout: {x.shape}")
+        x = self.conv2(x)
+        print(f"Shape after feed forward: {x.shape}")
+
+        return x + res
+
+
+class Model(nn.Module):
+    def __init__(self, input_shape, head_size, num_heads, ff_dim, num_transformer_blocks, mlp_units, dropout=0, mlp_dropout=0):
+        super(Model, self).__init__()
+        # (batch_size, seq_len, input_dim)
+        # (485, 8, 1)
+        # self.input_shape = input_shape
+        # Turn input shape tensor into a tuple
+        self.input_shape = tuple(input_shape)
+        print(f'Model input shape: {self.input_shape}, head size: {head_size}, num heads: {num_heads}, ff dim: {ff_dim}, num transformer blocks: {num_transformer_blocks}, mlp units: {mlp_units}, dropout: {dropout}, mlp dropout: {mlp_dropout}')
+        # TODO: Embedding layer here
+        self.encoders = nn.ModuleList([TransformerEncoder(
+            self.input_shape, head_size, num_heads, ff_dim, dropout) for _ in range(num_transformer_blocks)])
+        # Reduction from embeddings layer back to 8
+
+        self.pool = nn.AdaptiveAvgPool1d(output_size=1)
+        self.mlp = nn.Sequential(
+            *[nn.Sequential(nn.Linear(self.input_shape[1], dim), nn.ELU(),
+                            nn.Dropout(mlp_dropout)) for dim in mlp_units],
+            nn.Linear(mlp_units[-1], 1)
+        )
+
+    def forward(self, inputs):
+        # Input dimensions
+        # inputs: (batch_size, seq_len, input_dim)
+        print(f"model forward Input shape: {inputs.shape}")
+        x = inputs
+        for i, encoder in enumerate(self.encoders):
+            x = encoder(x)
+            print(f"Shape after transformer block {i+1}: {x.shape}")
+
+        # GlobalAveragePooling in PyTorch is done with AdaptiveAvgPool1D
+        # permute and squeeze are used to get the right shape
+        x = self.pool(x.permute(0, 2, 1)).squeeze(-1)
+        print(f"Shape after pooling: {x.shape}")
+
+        x = self.mlp(x)
+        print(f"Final output shape: {x.shape}")
+        # inputs: (batch_size, seq_len, input_dim)
+        return x
+
+
+def lr_scheduler(epoch, lr, warmup_epochs=30, decay_epochs=100, initial_lr=1e-6, base_lr=1e-3, min_lr=5e-5):
+    if epoch <= warmup_epochs:
+        pct = epoch / warmup_epochs
+        return ((base_lr - initial_lr) * pct) + initial_lr
+
+    if epoch > warmup_epochs and epoch < warmup_epochs+decay_epochs:
+        pct = 1 - ((epoch - warmup_epochs) / decay_epochs)
+        return ((base_lr - min_lr) * pct) + min_lr
+
+    return min_lr
+
+
+# Following is your training part. Make sure your x_train and y_train are torch tensors
+# and are on the right device (cpu or gpu) before passing into the model.
+x_train = torch.tensor(x_train).float()  # assuming x_train is numpy array
+y_train = torch.tensor(y_train).float()  # assuming y_train is numpy array
+
+model = Model(
+    input_shape=x_train.shape,
+    head_size=46,
+    num_heads=60,
+    ff_dim=55,
+    num_transformer_blocks=2,
+    mlp_units=[256],
+    mlp_dropout=0.4,
+    dropout=0.14,
+)
+
+optimizer = Adam(model.parameters(), lr=1e-4)
+criterion = nn.MSELoss()
+
+scheduler = LambdaLR(optimizer, lambda epoch: lr_scheduler(
+    epoch, optimizer.param_groups[0]['lr']))
+
+# Turn the training data into tensors
+x_train = torch.tensor(x_train).float()
+y_train = torch.tensor(y_train).float()
+epochs = 100  # number of epochs
+for epoch in range(epochs):
+    model.train()  # switch to training mode
+    optimizer.zero_grad()  # reset gradients
+
+    output = model(x_train)
+    loss = criterion(output, y_train)
+
+    loss.backward()  # compute gradients
+    optimizer.step()  # update weights
+
+    scheduler.step()  # update learning rate
+
+    # optionally print loss here
+    if epoch % 10 == 0:
+        print(f"Epoch: {epoch}, Loss: {loss.item()}")
