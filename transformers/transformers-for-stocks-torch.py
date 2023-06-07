@@ -21,6 +21,8 @@ import torch.nn.functional as F
 from torch.nn import TransformerEncoder, TransformerEncoderLayer
 from torch.optim.lr_scheduler import LambdaLR
 from sklearn.model_selection import train_test_split
+from torch.utils.tensorboard import SummaryWriter
+
 plt.style.use('seaborn')
 yf.pdr_override()
 
@@ -151,10 +153,12 @@ timesteps = 8
 # So for each element of training set, we have 8 previous training set elements
 x_train = []
 y_train = []
-for i in range(timesteps, training_set.shape[0]):
+
+# subtract 1 because y_train will need one more value
+for i in range(timesteps, training_set.shape[0] - 1):
     x_train.append(training_set_scaled[i-timesteps:i, 0])
-    y_train.append(training_set_scaled[i, 0])
-x_train, y_train = np.array(x_train), np.array(y_train)
+    # start from i-timesteps+1 to shift one step
+    y_train.append(training_set_scaled[i-timesteps+1:i+1, 0])
 
 # Notice how the first y_train value becomes the last X_train value for the next sample
 x_train, y_train = np.array(x_train), np.array(y_train)
@@ -166,6 +170,7 @@ print(x_train[1], y_train[1])
 # Notice how the first y_train value becomes the last X_train value for the next sample
 # print(x_train.shape, y_train.shape)
 x_train = x_train.reshape((x_train.shape[0], x_train.shape[1], 1))
+y_train = y_train.reshape((y_train.shape[0], y_train.shape[1], 1))
 # x_train = x_train.reshape((x_train.shape[0], 1, x_train.shape[1]))
 print(x_train.shape, y_train.shape)
 
@@ -175,7 +180,19 @@ print(x_train.shape, y_train.shape, type(x_train), type(y_train))
 idx = np.random.permutation(len(x_train))
 x_train = x_train[idx]
 y_train = y_train[idx]
-x_train.shape, y_train.shape
+
+# Do the same for x_test and y_test
+x_test = []
+y_test = []
+testing_set_scaled = sc.transform(test_set)
+for i in range(timesteps, testing_set_scaled.shape[0] - 1):
+    x_test.append(testing_set_scaled[i-timesteps:i, 0])
+    y_test.append(testing_set_scaled[i-timesteps+1:i+1, 0])
+
+x_test, y_test = np.array(x_test), np.array(y_test)
+x_test = x_test.reshape((x_test.shape[0], x_test.shape[1], 1))
+y_test = y_test.reshape((y_test.shape[0], y_test.shape[1], 1))
+print(x_test.shape, y_test.shape)
 
 
 class TransformerEncoder(nn.Module):
@@ -259,11 +276,11 @@ class Model(nn.Module):
         # Reduction from embeddings layer back to 8
         # self.pool = nn.AdaptiveAvgPool1d(output_size=input_shape[1])
         self.conv1 = nn.Linear(
-            head_size * num_heads, self.input_shape[1])  # New embedding layer
+            head_size * num_heads, self.input_shape[2])  # New embedding layer
         self.mlp = nn.Sequential(
-            *[nn.Sequential(nn.Linear(self.input_shape[1], dim), nn.ELU(),
+            *[nn.Sequential(nn.Linear(self.input_shape[2], dim), nn.ELU(),
                             nn.Dropout(mlp_dropout)) for dim in mlp_units],
-            nn.Linear(mlp_units[-1], 1)
+            nn.Linear(mlp_units[-1], self.input_shape[2])
         )
 
     def forward(self, inputs):
@@ -303,8 +320,11 @@ def lr_scheduler(epoch, lr, warmup_epochs=30, decay_epochs=100, initial_lr=1e-6,
 
 # Following is your training part. Make sure your x_train and y_train are torch tensors
 # and are on the right device (cpu or gpu) before passing into the model.
-x_train = torch.tensor(x_train).float()  # assuming x_train is numpy array
-y_train = torch.tensor(y_train).float()  # assuming y_train is numpy array
+# assuming x_train is numpy array
+mps_device = torch.device("mps")
+x_train = torch.tensor(x_train, device=mps_device, dtype=torch.float32)
+# assuming y_train is numpy array
+y_train = torch.tensor(y_train, device=mps_device, dtype=torch.float32)
 
 model = Model(
     input_shape=x_train.shape,
@@ -315,7 +335,7 @@ model = Model(
     mlp_units=[256],
     mlp_dropout=0.4,
     dropout=0.14,
-)
+).to(mps_device)
 
 optimizer = Adam(model.parameters(), lr=1e-4)
 criterion = nn.MSELoss()
@@ -323,12 +343,17 @@ criterion = nn.MSELoss()
 scheduler = LambdaLR(optimizer, lambda epoch: lr_scheduler(
     epoch, optimizer.param_groups[0]['lr']))
 
+
+tb = SummaryWriter()
+
 epochs = 100  # number of epochs
 for epoch in range(epochs):
     model.train()  # switch to training mode
     optimizer.zero_grad()  # reset gradients
 
     output = model(x_train)
+    print(f"Output shape: {output.shape}")
+    print(f"y_train shape: {y_train.shape}")
     loss = criterion(output, y_train)
 
     loss.backward()  # compute gradients
@@ -336,6 +361,10 @@ for epoch in range(epochs):
 
     scheduler.step()  # update learning rate
 
+    tb.add_scalar("Loss", loss, epoch)
+
     # optionally print loss here
     if epoch % 10 == 0:
         print(f"Epoch: {epoch}, Loss: {loss.item()}")
+
+tb.close()
