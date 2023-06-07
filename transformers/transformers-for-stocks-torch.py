@@ -156,13 +156,17 @@ for i in range(timesteps, training_set.shape[0]):
     y_train.append(training_set_scaled[i, 0])
 x_train, y_train = np.array(x_train), np.array(y_train)
 
+# Notice how the first y_train value becomes the last X_train value for the next sample
+x_train, y_train = np.array(x_train), np.array(y_train)
+
 print(x_train[0], y_train[0])
 print(x_train[1], y_train[1])
 
 # Notice how the first y_train value becomes the last X_train value for the next sample
-print(x_train.shape, y_train.shape)
-# x_train = x_train.reshape((x_train.shape[0], x_train.shape[1], 1))
-x_train = x_train.reshape((x_train.shape[0], 1, x_train.shape[1]))
+# Notice how the first y_train value becomes the last X_train value for the next sample
+# print(x_train.shape, y_train.shape)
+x_train = x_train.reshape((x_train.shape[0], x_train.shape[1], 1))
+# x_train = x_train.reshape((x_train.shape[0], 1, x_train.shape[1]))
 print(x_train.shape, y_train.shape)
 
 print(x_train.shape, y_train.shape, type(x_train), type(y_train))
@@ -179,24 +183,23 @@ class TransformerEncoder(nn.Module):
         super(TransformerEncoder, self).__init__()
         print(
             f'TransformerEncoder input dim: {input_dim}, head size: {head_size}, num heads: {num_heads}, ff dim: {ff_dim}, dropout: {dropout}')
-        # Normalize on (485, 1, 8)
-        self.ln1 = nn.LayerNorm(input_dim, eps=1e-6)
         # Get from 8 to head_size * num_heads)
-        self.embedding = nn.Linear(
-            input_dim[2], head_size * num_heads)  # New embedding layer
+        # Normalize on (head_size * num_heads, 1, 8)
+        # self.ln1 = nn.LayerNorm(input_dim, eps=1e-6)
         # Get from (485, x, head_size * num_heads) to (485, x, head_size * num_heads)
         self.attn = nn.MultiheadAttention(
             embed_dim=head_size*num_heads, num_heads=num_heads, dropout=dropout)
         # New dimension
-        new_dim = (input_dim[0], input_dim[1], head_size * num_heads)
+        # new_dim = (input_dim[0], input_dim[1], head_size * num_heads)
         self.dropout1 = nn.Dropout(dropout)
-        self.ln2 = nn.LayerNorm(new_dim, eps=1e-6)
+        # Don't put the batch size for the dimensions for normalization
+        self.ln2 = nn.LayerNorm(input_dim[1:], eps=1e-6)
         # Equivalent to Conv1D with kernel size 1 in TF
         # Get from head_size * num_heads to ff_dim
         self.conv1 = nn.Linear(head_size * num_heads, ff_dim)
         self.dropout2 = nn.Dropout(dropout)
         # Equivalent to Conv1D with kernel size 1 in TF
-        self.conv2 = nn.Linear(ff_dim, input_dim[2])
+        self.conv2 = nn.Linear(ff_dim, head_size*num_heads)
         # self.ln3 = nn.LayerNorm(new_dim, eps=1e-6)
 
     def forward(self, inputs):
@@ -206,14 +209,14 @@ class TransformerEncoder(nn.Module):
         # print(f"forward x shape: {x.shape}")
 
         # Input shape: (batch_size, seq_len, input_dim)
-        x = self.ln1(inputs)
-        print(f"Shape after ln1: {x.shape}")
-        embeddings = self.embedding(x)
-        print(f"Shape after embedding: {embeddings.shape}")
+        # x = self.ln1(inputs)
+        # print(f"Shape after ln1: {x.shape}")
         # x is reshaped to (seq_len, batch_size, input_dim) because PyTorch's MultiheadAttention requires this format
         # x = x.permute(1, 0, 2)
-        print(f"Shape after permute: {x.shape}")
-        x, _ = self.attn(embeddings, embeddings, embeddings)
+        # print(f"Shape after permute: {x.shape}")
+
+        # (batch_size, input_dim, seq_len)
+        x, _ = self.attn(inputs, inputs, inputs, is_causal=True)  # add mask
         print(f"Shape after attn: {x.shape}")
         # reshaping back to (batch_size, seq_len, input_dim)
         # x = self.dropout1(x.permute(1, 0, 2))
@@ -221,7 +224,7 @@ class TransformerEncoder(nn.Module):
         print(f"Shape after dropout: {x.shape}")
         # reduce back to input_dim[2]
         # res = x + inputs
-        res = x + embeddings
+        res = x + inputs
         print(f"Shape after res: {x.shape}")
         layer_norm = self.ln2(res)
         print(f"Shape after ln2: {layer_norm.shape}")
@@ -232,7 +235,7 @@ class TransformerEncoder(nn.Module):
         x = self.conv2(x)
         print(f"Shape after feed forward: {x.shape}")
 
-        return x + res
+        return x + layer_norm
 
 
 class Model(nn.Module):
@@ -243,13 +246,20 @@ class Model(nn.Module):
         # self.input_shape = input_shape
         # Turn input shape tensor into a tuple
         self.input_shape = tuple(input_shape)
-        print(f'Model input shape: {self.input_shape}, head size: {head_size}, num heads: {num_heads}, ff dim: {ff_dim}, num transformer blocks: {num_transformer_blocks}, mlp units: {mlp_units}, dropout: {dropout}, mlp dropout: {mlp_dropout}')
-        # TODO: Embedding layer here
-        self.encoders = nn.ModuleList([TransformerEncoder(
-            self.input_shape, head_size, num_heads, ff_dim, dropout) for _ in range(num_transformer_blocks)])
-        # Reduction from embeddings layer back to 8
 
-        self.pool = nn.AdaptiveAvgPool1d(output_size=1)
+        # Each price is being embedded as a vector of size head_size * num_heads
+        self.embedding = nn.Linear(
+            self.input_shape[2], head_size * num_heads)  # New embedding layer
+        print(f'Model input shape: {self.input_shape}, head size: {head_size}, num heads: {num_heads}, ff dim: {ff_dim}, num transformer blocks: {num_transformer_blocks}, mlp units: {mlp_units}, dropout: {dropout}, mlp dropout: {mlp_dropout}')
+        # Dimension after embedding layer
+        new_dim = (self.input_shape[0],
+                   self.input_shape[1], head_size * num_heads)
+        self.transformer_blocks = nn.ModuleList([TransformerEncoder(
+            new_dim, head_size, num_heads, ff_dim, dropout) for _ in range(num_transformer_blocks)])
+        # Reduction from embeddings layer back to 8
+        # self.pool = nn.AdaptiveAvgPool1d(output_size=input_shape[1])
+        self.conv1 = nn.Linear(
+            head_size * num_heads, self.input_shape[1])  # New embedding layer
         self.mlp = nn.Sequential(
             *[nn.Sequential(nn.Linear(self.input_shape[1], dim), nn.ELU(),
                             nn.Dropout(mlp_dropout)) for dim in mlp_units],
@@ -257,19 +267,22 @@ class Model(nn.Module):
         )
 
     def forward(self, inputs):
-        # Input dimensions
         # inputs: (batch_size, seq_len, input_dim)
         print(f"model forward Input shape: {inputs.shape}")
-        x = inputs
-        for i, encoder in enumerate(self.encoders):
-            x = encoder(x)
+        embeddings = self.embedding(inputs)
+        # (batch_size, seq_len, head_size * num_heads)
+        print(f"Shape after embedding: {embeddings.shape}")
+        # Input dimensions
+        x = embeddings
+        for i, transformer_block in enumerate(self.transformer_blocks):
+            x = transformer_block(x)
             print(f"Shape after transformer block {i+1}: {x.shape}")
-
-        # GlobalAveragePooling in PyTorch is done with AdaptiveAvgPool1D
-        # permute and squeeze are used to get the right shape
-        x = self.pool(x.permute(0, 2, 1)).squeeze(-1)
-        print(f"Shape after pooling: {x.shape}")
-
+        x = self.conv1(x)
+        print(f"Shape after conv1: {x.shape}")
+        # # GlobalAveragePooling in PyTorch is done with AdaptiveAvgPool1D
+        # # permute and squeeze are used to get the right shape
+        # x = self.pool(x.permute(0, 2, 1)).squeeze(-1)
+        # print(f"Shape after pooling: {x.shape}")
         x = self.mlp(x)
         print(f"Final output shape: {x.shape}")
         # inputs: (batch_size, seq_len, input_dim)
@@ -310,9 +323,6 @@ criterion = nn.MSELoss()
 scheduler = LambdaLR(optimizer, lambda epoch: lr_scheduler(
     epoch, optimizer.param_groups[0]['lr']))
 
-# Turn the training data into tensors
-x_train = torch.tensor(x_train).float()
-y_train = torch.tensor(y_train).float()
 epochs = 100  # number of epochs
 for epoch in range(epochs):
     model.train()  # switch to training mode
