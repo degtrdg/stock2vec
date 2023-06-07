@@ -183,7 +183,8 @@ class TransformerEncoder(nn.Module):
         # print(f"Shape after permute: {x.shape}")
 
         # (batch_size, input_dim, seq_len)
-        x, _ = self.attn(inputs, inputs, inputs, is_causal=True)  # add mask
+        # x, _ = self.attn(inputs, inputs, inputs, is_causal=True)  # add mask
+        x, _ = self.attn(inputs, inputs, inputs)
         print(f"Shape after attn: {x.shape}")
         # reshaping back to (batch_size, seq_len, input_dim)
         # x = self.dropout1(x.permute(1, 0, 2))
@@ -202,7 +203,8 @@ class TransformerEncoder(nn.Module):
         x = self.conv2(x)
         print(f"Shape after feed forward: {x.shape}")
 
-        return x + layer_norm
+        # return x + layer_norm
+        return x + res
 
 
 class Model(nn.Module):
@@ -223,14 +225,14 @@ class Model(nn.Module):
                    self.input_shape[1], head_size * num_heads)
         self.transformer_blocks = nn.ModuleList([TransformerEncoder(
             new_dim, head_size, num_heads, ff_dim, dropout) for _ in range(num_transformer_blocks)])
-        # Reduction from embeddings layer back to 8
-        # self.pool = nn.AdaptiveAvgPool1d(output_size=input_shape[1])
-        self.conv1 = nn.Linear(
-            head_size * num_heads, self.input_shape[2])  # New embedding layer
+        # Reduction from embeddings layer back to 1
+        self.pool = nn.AdaptiveAvgPool1d(output_size=1)
+        # self.conv1 = nn.Linear(
+        #     head_size * num_heads, self.input_shape[2])  # New embedding layer
         self.mlp = nn.Sequential(
-            *[nn.Sequential(nn.Linear(self.input_shape[2], dim), nn.ELU(),
+            *[nn.Sequential(nn.Linear(self.input_shape[1], dim), nn.ELU(),
                             nn.Dropout(mlp_dropout)) for dim in mlp_units],
-            nn.Linear(mlp_units[-1], self.input_shape[2])
+            nn.Linear(mlp_units[-1], 1)
         )
 
     def forward(self, inputs):
@@ -244,12 +246,12 @@ class Model(nn.Module):
         for i, transformer_block in enumerate(self.transformer_blocks):
             x = transformer_block(x)
             print(f"Shape after transformer block {i+1}: {x.shape}")
-        x = self.conv1(x)
-        print(f"Shape after conv1: {x.shape}")
+        # x = self.conv1(x)
+        # print(f"Shape after conv1: {x.shape}")
         # # GlobalAveragePooling in PyTorch is done with AdaptiveAvgPool1D
         # # permute and squeeze are used to get the right shape
-        # x = self.pool(x.permute(0, 2, 1)).squeeze(-1)
-        # print(f"Shape after pooling: {x.shape}")
+        x = self.pool(x).squeeze(-1)
+        print(f"Shape after pooling: {x.shape}")
         x = self.mlp(x)
         print(f"Final output shape: {x.shape}")
         # inputs: (batch_size, seq_len, input_dim)
@@ -282,7 +284,7 @@ y_train = []
 for i in range(timesteps, training_set.shape[0] - 1):
     x_train.append(training_set_scaled[i-timesteps:i, 0])
     # start from i-timesteps+1 to shift one step
-    y_train.append(training_set_scaled[i-timesteps+1:i+1, 0])
+    y_train.append(training_set_scaled[i+1, 0])
 
 # Notice how the first y_train value becomes the last X_train value for the next sample
 x_train, y_train = np.array(x_train), np.array(y_train)
@@ -294,7 +296,7 @@ print(x_train[1], y_train[1])
 # Notice how the first y_train value becomes the last X_train value for the next sample
 # print(x_train.shape, y_train.shape)
 x_train = x_train.reshape((x_train.shape[0], x_train.shape[1], 1))
-y_train = y_train.reshape((y_train.shape[0], y_train.shape[1], 1))
+y_train = y_train.reshape((y_train.shape[0], 1))
 # x_train = x_train.reshape((x_train.shape[0], 1, x_train.shape[1]))
 print(x_train.shape, y_train.shape)
 
@@ -311,11 +313,12 @@ y_test = []
 testing_set_scaled = sc.transform(test_set)
 for i in range(timesteps, testing_set_scaled.shape[0] - 1):
     x_test.append(testing_set_scaled[i-timesteps:i, 0])
-    y_test.append(testing_set_scaled[i-timesteps+1:i+1, 0])
+    # y_test.append(testing_set_scaled[i-timesteps+1:i+1, 0])
+    y_test.append(testing_set_scaled[i+1, 0])
 
 x_test, y_test = np.array(x_test), np.array(y_test)
 x_test = x_test.reshape((x_test.shape[0], x_test.shape[1], 1))
-y_test = y_test.reshape((y_test.shape[0], y_test.shape[1], 1))
+y_test = y_test.reshape((y_test.shape[0], 1))
 print(x_test.shape, y_test.shape)
 
 # Following is your training part. Make sure your x_train and y_train are torch tensors
@@ -349,7 +352,7 @@ model = Model(
     head_size=46,
     num_heads=60,
     ff_dim=55,
-    num_transformer_blocks=2,
+    num_transformer_blocks=5,
     mlp_units=[256],
     mlp_dropout=0.4,
     dropout=0.14,
