@@ -155,7 +155,7 @@ class TransformerEncoder(nn.Module):
         # self.ln1 = nn.LayerNorm(input_dim, eps=1e-6)
         # Get from (485, x, head_size * num_heads) to (485, x, head_size * num_heads)
         self.attn = nn.MultiheadAttention(
-            embed_dim=head_size*num_heads, num_heads=num_heads, dropout=dropout)
+            embed_dim=head_size*num_heads, num_heads=num_heads, dropout=dropout, batch_first=True)
         # New dimension
         # new_dim = (input_dim[0], input_dim[1], head_size * num_heads)
         self.dropout1 = nn.Dropout(dropout)
@@ -385,9 +385,9 @@ for epoch in range(epochs):
         # Record the loss into the tensorboard
         tb.add_scalar("Loss", loss.item(), epoch*len(train_loader) + i)
 
-        # # optionally print loss here
-        # if i % 10 == 0:
-        #     print(f"Epoch: {epoch}, Batch: {i}, Loss: {loss.item()}")
+        # optionally print loss here
+        if i % 10 == 0:
+            print(f"Epoch: {epoch}, Batch: {i}, Loss: {loss.item()}")
 
     # Evaluation phase
     # with torch.no_grad():
