@@ -1,14 +1,3 @@
-# %% [markdown]
-# # Transformers for Stock Price Prediction
-# 
-# <img src="https://i.imgur.com/dOf27L4.jpeg" width="1200px">
-# 
-# ## Implementation of the Transformer timeseries coding example found on the Keras website at
-# https://keras.io/examples/timeseries/timeseries_classification_transformer/
-# ######                                                                 Thank you to Mr. Theodoros Ntakouris for writng the code example.
-# ### The example on the website uses a transformer model to predict the type of engine problem (categorical) based on the timeseries data of noise sensors listening to the engine... this notebook applies that paradigm to stocks market prices. This is not new or novel but I would like to point out some observations.
-
-# %%
 import yfinance as yf
 import numpy as np
 import tensorflow as tf
@@ -178,36 +167,35 @@ y_train = y_train[idx]
 # 
 # ### Fortunately, with recurrent neural nets (such as LSTMs) for timeseries analysis, the inputs [#samples, timesteps, features] are compatible with transformers!
 # #### The image below is for a single transformer encoder block. For our purposes, the embedding is removed and limited to only to a LayerNormalization layer (which does work better than a BatchNormalization layer). The positional embedding is an option, but frankly - I have tried three diferent time2vec implementations and although the code works, the results are worse (If you can implement a time2vec function which actually improves the rmse score then please share with me). The multi-head attention is already coded for in keras. The feed forward part can be almost anything. We will use a Conv1D layer(because results are good) but you could get away with almost anything, dense layers, another LSTM, whatever you want. You could also stick an LSTM in the embedding layer - it works, if your return_sequences = True, it just give worse results. 
-
-# %%
 def transformer_encoder(inputs, head_size, num_heads, ff_dim, dropout=0):
     
     # Normalization and Attention
-    # "EMBEDDING LAYER"
     x = layers.LayerNormalization(epsilon=1e-6)(inputs)
+    # Print after normalization
+    print(f'After normalization: {x.shape}')
     
-    # "ATTENTION LAYER"
     x = layers.MultiHeadAttention(
         key_dim=head_size, num_heads=num_heads, dropout=dropout
     )(x, x)
+    # Print after MultiHeadAttention
+    print(f'After MultiHeadAttention: {x.shape}')
+    
     x = layers.Dropout(dropout)(x)
     res = x + inputs
+    # Print after Dropout and addition
+    print(f'After Dropout and addition: {res.shape}')
     
-    # FEED FORWARD Part - you can stick anything here or just delete the whole section - it will still work. 
     x = layers.LayerNormalization(epsilon=1e-6)(res)
+    print(f'After second normalization: {x.shape}')
     x = layers.Conv1D(filters=ff_dim, kernel_size=1, activation = "relu")(x)
+    print(f'After Conv1D: {x.shape}')
     x = layers.Dropout(dropout)(x)
+    print(f'After second Dropout: {x.shape}')
     x = layers.Conv1D(filters=inputs.shape[-1], kernel_size=1)(x)
+    print(f'After second Conv1D: {x.shape}')
+    
     return x + res
 
-# %% [markdown]
-# ### The main part of our model is now complete. 
-# ### We can stack multiple of those transformer_encoder blocks and we can also proceed to add the final Multi-Layer Perceptron/ DNN head. 
-# 
-# ### Apart from a stack of Dense layers, we need to reduce the output tensor of the TransformerEncoder part of our model down to a vector of features for each data point in the current batch. A pooling layer like GlobalAveragePooling1D layer will do this.
-# GlobalAveragePooling1D input shape is [#samples, timesteps, features] (if channels_first format is chosen), its default output is [#samples, timesteps].
-
-# %%
 def build_model(
     input_shape,
     head_size,
@@ -221,17 +209,26 @@ def build_model(
     inputs = keras.Input(shape=input_shape)
     x = inputs
     
-    for _ in range(num_transformer_blocks):  # This is what stacks our transformer blocks
+    for _ in range(num_transformer_blocks):
         x = transformer_encoder(x, head_size, num_heads, ff_dim, dropout)
-
+        # Print after transformer block
+        print(f'After transformer block: {x.shape}')
+    
     x = layers.GlobalAveragePooling1D(data_format="channels_first")(x)
+    # Print after GlobalAveragePooling1D
+    print(f'After GlobalAveragePooling1D: {x.shape}')
+    
     for dim in mlp_units:
         x = layers.Dense(dim, activation="elu")(x)
         x = layers.Dropout(mlp_dropout)(x)
-    outputs = layers.Dense(1, activation="linear")(x) #this is a pass-through
+        # Print after each Dense layer and Dropout
+        print(f'After Dense and Dropout: {x.shape}')
+    
+    outputs = layers.Dense(1, activation="linear")(x)
+    # Print after final Dense layer
+    print(f'After final Dense: {outputs.shape}')
+    
     return keras.Model(inputs, outputs)
-
-
 # %% [markdown]
 # ### Another note - the activation function above makes a difference, elu is best : elu > selu > tanh > relu > gelu > swish. I am curious if serlu would out perform them but I can't figure out how to add the custom activation function. 
 
@@ -341,14 +338,3 @@ return_rmse(test_set_return[1:], predicted_return[1:])
 # ### 3. elu is the best activation for the final DNN/MLP "classification head".
 # ### 4. Also - I know that what really counts is predicting returns. However if I use stock['return'] instead of stock['Close'] I get vanishing gradients. If anyone can help me solve THAT problem I would greatly appreciate it. 
 # ### 5. In the Price and Return graphs above - there is always a lag, that is expected - but unfortunately it is also very unprofitable. If one ever hopes to apply this - one has to be able to minimize losses, by predicting price reversals. I have tried to apply the same model to predict whether there is a reversal and it works ! but only 50.000 % of the time.
-
-# %% [markdown]
-# # Can we use technical indicators to predict reversal?
-# ### Fortunataley our database has them precalculated.
-# 
-
-# %% [markdown]
-# 
-# 
-
-
