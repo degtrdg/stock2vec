@@ -23,69 +23,38 @@ from torch.optim.lr_scheduler import LambdaLR
 from sklearn.model_selection import train_test_split
 from torch.utils.tensorboard import SummaryWriter
 
-plt.style.use('seaborn')
-yf.pdr_override()
-
-# For reproducability
+#For reproducability
+from numpy.random import seed
 seed(1)
 tf.random.set_seed(2)
 
-
 # Some functions to help out with
-def plot_predictions(test, predicted, symbol):
-    plt.plot(test, color='red', label=f'Real {symbol} Stock Price')
-    plt.plot(predicted, color='blue', label=f'Predicted {symbol} Stock Price')
+def plot_predictions(test,predicted,symbol):
+    plt.plot(test, color='red',label=f'Real {symbol} Stock Price')
+    plt.plot(predicted, color='blue',label=f'Predicted {symbol} Stock Price')
     plt.title(f'{symbol} Stock Price Prediction')
     plt.xlabel('Time')
     plt.ylabel(f'{symbol} Stock Price')
     plt.legend()
     plt.show()
 
-
-def plot_return_predictions(test, predicted, symbol):
-    plt.plot(test, color='red', label=f'Real {symbol} Stock Price Returns')
-    plt.plot(predicted, color='blue',
-             label=f'Predicted {symbol} Stock Price Return')
+def plot_return_predictions(test,predicted,symbol):
+    plt.plot(test, color='red',label=f'Real {symbol} Stock Price Returns')
+    plt.plot(predicted, color='blue',label=f'Predicted {symbol} Stock Price Return')
     plt.title(f'{symbol} Stock Return Prediction')
     plt.xlabel('Time')
     plt.ylabel(f'{symbol} Stock Price Returns')
     plt.legend()
     plt.show()
-
-
-def return_rmse(test, predicted):
+    
+def return_rmse(test,predicted):
     rmse = math.sqrt(mean_squared_error(test, predicted))
     print("The root mean squared error is {}.".format(rmse))
     return rmse
 
-
-def get_ticker_data(ticker: str, param_start_date, param_end_date) -> tuple:
-    # Fetch data from Yahoo Finance
-    data = pdr.get_data_yahoo(
-        ticker, start=param_start_date, end=param_end_date)
-    data.reset_index(inplace=True)
-    data = data.fillna(method="ffill", axis=0)
-    data = data.fillna(method="bfill", axis=0)
-
-    # Prepare the data
-    prices = data["Close"].values.reshape(-1, 1)
-
-    # Scale the data
-    scaler = MinMaxScaler(feature_range=(-1, 1))
-    prices = scaler.fit_transform(prices)
-
-    # Create sequences
-    SEQ_LEN = 8  # I assumed the sequence length, you can change this value as per your requirements
-    inputs, targets = [], []
-    for i in range(SEQ_LEN, len(prices) - 1):
-        inputs.append(prices[i - SEQ_LEN:i])
-        targets.append(prices[i + 1])
-
-    return data, np.array(inputs), np.array(targets)
-
-
-def fetch_ticker_data(ticker: str, start_date, end_date) -> tuple:
-    return get_ticker_data(ticker, start_date, end_date)
+def fetch_ticker_data(ticker: str, start_date, end_date) -> pd.DataFrame:
+    df = yf.Ticker("IBM").history(start=start_date, end=end_date).reset_index()[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']]
+    return df.rename(columns={'Date': 'date', 'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'})
 
 
 def shift(xs, n):
@@ -98,37 +67,29 @@ def shift(xs, n):
         e[:n] = xs[-n:]
     return e
 
-# Scaled Exponentially-Regularized Linear Unit to try out - if anyone can make this work, let me know.
-
-# def serlu(x, lambdaa=1.07862, alphaa=2.90427):
-#     result = tf.cond(x >= 0, lambda: tf.math.multiply(lambdaa, x), lambda: tf.math.multiply(lambdaa, alphaa, x, tf.exp(x)))
-#     return result
-# Example usage:
-
-
+# # Choose a stock symbol
 symbol_to_fetch = 'IBM'
+# Choose a date range
 start_date = '2020-01-01'
 end_date = datetime.now().strftime('%Y-%m-%d')
-stock, inputs, targets = fetch_ticker_data(
-    symbol_to_fetch, start_date, end_date)
-stock.columns = ['DateTime', 'High', 'Low',
-                 'Open', 'Close', 'Volume', 'Adj Close']
+# Get Stock Price Data
+stock = fetch_ticker_data(symbol_to_fetch, start_date, end_date)
+stock.columns = ['DateTime', 'Open', 'High', 'Low', 'Close', 'Volume']
 stock['DateTime'] = pd.to_datetime(stock['DateTime'])
-stock.set_index('DateTime', inplace=True)
-stock['Symbol'] = symbol_to_fetch
+# stock['DateTime'] = stock['DateTime'].apply(lambda x: datetime.fromtimestamp(x))
+stock = stock.fillna(method="ffill", axis=0)
+stock = stock.fillna(method="bfill", axis=0)
+stock = stock.set_index('DateTime')
 
-# save a copy for later testing
+stock['Symbol'] = symbol_to_fetch
+stock.tail()
+#save a copy for later testing
 original_stock = stock
 original_symbol = symbol_to_fetch
 
-# print(stock_df.tail())
-# print(inputs[-5:], targets[-5:])
-# Choose a stock symbol
-symbol_to_fetch = 'IBM'
 # Choose a date range
 start_date = str(datetime(2017, 1, 1).date())
 end_date = str(datetime(2021, 2, 18).date())
-# end_date = datetime.now().strftime('%Y-%m-%d')
 
 # We have chosen the target as 'Close' attribute for prices. Let's see what it looks like
 target = 'Close'  # this is accessed by .iloc[:,3:4].values below
@@ -152,7 +113,6 @@ class TransformerEncoder(nn.Module):
             f'TransformerEncoder input dim: {input_dim}, head size: {head_size}, num heads: {num_heads}, ff dim: {ff_dim}, dropout: {dropout}')
         # Get from 8 to head_size * num_heads)
         # Normalize on (head_size * num_heads, 1, 8)
-        # self.ln1 = nn.LayerNorm(input_dim, eps=1e-6)
         # Get from (485, x, head_size * num_heads) to (485, x, head_size * num_heads)
         self.attn = nn.MultiheadAttention(
             embed_dim=head_size*num_heads, num_heads=num_heads, dropout=dropout, batch_first=True)
@@ -176,22 +136,14 @@ class TransformerEncoder(nn.Module):
         # print(f"forward x shape: {x.shape}")
 
         # Input shape: (batch_size, seq_len, input_dim)
-        # x = self.ln1(inputs)
-        # print(f"Shape after ln1: {x.shape}")
-        # x is reshaped to (seq_len, batch_size, input_dim) because PyTorch's MultiheadAttention requires this format
-        # x = x.permute(1, 0, 2)
-        # print(f"Shape after permute: {x.shape}")
 
         # (batch_size, input_dim, seq_len)
-        # x, _ = self.attn(inputs, inputs, inputs, is_causal=True)  # add mask
         x, _ = self.attn(inputs, inputs, inputs)
         print(f"Shape after attn: {x.shape}")
         # reshaping back to (batch_size, seq_len, input_dim)
-        # x = self.dropout1(x.permute(1, 0, 2))
         x = self.dropout1(x)
         print(f"Shape after dropout: {x.shape}")
         # reduce back to input_dim[2]
-        # res = x + inputs
         res = x + inputs
         print(f"Shape after res: {x.shape}")
         layer_norm = self.ln2(res)
@@ -203,7 +155,6 @@ class TransformerEncoder(nn.Module):
         x = self.conv2(x)
         print(f"Shape after feed forward: {x.shape}")
 
-        # return x + layer_norm
         return x + res
 
 
@@ -212,7 +163,6 @@ class Model(nn.Module):
         super(Model, self).__init__()
         # (batch_size, seq_len, input_dim)
         # (485, 8, 1)
-        # self.input_shape = input_shape
         # Turn input shape tensor into a tuple
         self.input_shape = tuple(input_shape)
 
@@ -227,8 +177,6 @@ class Model(nn.Module):
             new_dim, head_size, num_heads, ff_dim, dropout) for _ in range(num_transformer_blocks)])
         # Reduction from embeddings layer back to 1
         self.pool = nn.AdaptiveAvgPool1d(output_size=1)
-        # self.conv1 = nn.Linear(
-        #     head_size * num_heads, self.input_shape[2])  # New embedding layer
         self.mlp = nn.Sequential(
             *[nn.Sequential(nn.Linear(self.input_shape[1], dim), nn.ELU(),
                             nn.Dropout(mlp_dropout)) for dim in mlp_units],
@@ -246,8 +194,6 @@ class Model(nn.Module):
         for i, transformer_block in enumerate(self.transformer_blocks):
             x = transformer_block(x)
             print(f"Shape after transformer block {i+1}: {x.shape}")
-        # x = self.conv1(x)
-        # print(f"Shape after conv1: {x.shape}")
         # # GlobalAveragePooling in PyTorch is done with AdaptiveAvgPool1D
         # # permute and squeeze are used to get the right shape
         x = self.pool(x).squeeze(-1)
@@ -324,7 +270,8 @@ print(x_test.shape, y_test.shape)
 # Following is your training part. Make sure your x_train and y_train are torch tensors
 # and are on the right device (cpu or gpu) before passing into the model.
 # assuming x_train is numpy array
-mps_device = torch.device("mps")
+# mps_device = torch.device("mps")
+mps_device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 x_train = torch.tensor(x_train, device=mps_device, dtype=torch.float32)
 # assuming y_train is numpy array
 y_train = torch.tensor(y_train, device=mps_device, dtype=torch.float32)
@@ -388,19 +335,5 @@ for epoch in range(epochs):
         # optionally print loss here
         if i % 10 == 0:
             print(f"Epoch: {epoch}, Batch: {i}, Loss: {loss.item()}")
-
-    # Evaluation phase
-    # with torch.no_grad():
-    #     total_test_loss = 0
-    #     for i, (x_test_batch, y_test_batch) in enumerate(test_loader):
-    #         model.eval()
-    #         test_output = model(x_test_batch)
-    #         test_loss = criterion(test_output, y_test_batch)
-    #         total_test_loss += test_loss.item()
-
-    #     avg_test_loss = total_test_loss / len(test_loader)
-    #     tb.add_scalar("Test Loss", avg_test_loss, epoch)
-    #     print(f"Epoch: {epoch}, Test Loss: {avg_test_loss}")
-
 
 tb.flush()
